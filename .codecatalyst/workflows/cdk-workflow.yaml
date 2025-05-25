@@ -1,0 +1,41 @@
+SchemaVersion: "1.0"
+Name: cdk-workflow
+Triggers:
+  - Type: PUSH
+    Branches:
+      - main
+Actions:
+  CDKBootstrapAction:
+    Identifier: aws/cdk-bootstrap@v1
+    Compute:
+      Type: EC2
+    Inputs:
+      Sources:
+        - WorkflowSource
+    Configuration:
+      Region: us-east-1
+      CdkCliVersion: latest
+    Environment:
+      Name: default
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+  CDKDeployAction:
+    Identifier: aws/cdk-deploy@v1
+    Compute:
+      Type: EC2
+    Inputs:
+      Sources:
+        - WorkflowSource
+    DependsOn:
+      - CDKBootstrapAction
+    Configuration:
+      StackName: CustomizedCodingCompanionStacktchbt2xo
+      Region: us-east-1
+      Context: '{"stack_name": "CustomizedCodingCompanionStacktchbt2xo"}'
+      CdkCliVersion: latest
+    Environment:
+      Name: default
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
