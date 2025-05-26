@@ -1,0 +1,123 @@
+Name: cdk-workflow
+SchemaVersion: "1.0"
+Triggers:
+  - Type: PUSH
+    Branches:
+      - main
+Actions:
+  ValidateModelAccess:
+    Identifier: aws/build@v1
+    Configuration:
+      Steps:
+        - Run: |
+            region=us-east-1
+            echo "Checking model access in $region region..."
+            
+            # Create proper JSON request body for Claude models
+            echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":10,"messages":[{"role":"user","content":"Hello"}]}' > claude_request.json
+            
+            # Create proper JSON request body for Cohere embed model
+            echo '{"texts":["Hello world"],"input_type":"search_document"}' > cohere_request.json
+            
+            # Check Claude 3 Sonnet access
+            echo "Checking access for anthropic.claude-3-sonnet-20240229-v1:0..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "anthropic.claude-3-sonnet-20240229-v1:0" --body file://claude_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model anthropic.claude-3-sonnet-20240229-v1:0"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model anthropic.claude-3-sonnet-20240229-v1:0"
+            fi
+            
+            # Check Claude 3 Haiku access
+            echo "Checking access for anthropic.claude-3-haiku-20240307-v1:0..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "anthropic.claude-3-haiku-20240307-v1:0" --body file://claude_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model anthropic.claude-3-haiku-20240307-v1:0"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model anthropic.claude-3-haiku-20240307-v1:0"
+            fi
+            
+            # Check Cohere Embed Multilingual access
+            echo "Checking access for cohere.embed-multilingual-v3..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "cohere.embed-multilingual-v3" --body file://cohere_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model cohere.embed-multilingual-v3"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model cohere.embed-multilingual-v3"
+            fi
+            
+            echo "All model access checks passed successfully!"
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+  bootstrap_us_east_1:
+    Identifier: aws/cdk-bootstrap@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+    DependsOn:
+      - ValidateModelAccess
+    Compute:
+      Type: EC2
+    Configuration:
+      Region: us-east-1
+      CdkCliVersion: latest
+  BuildFrontend:
+    Identifier: aws/build@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+      Artifacts: []
+    Outputs:
+      AutoDiscoverReports:
+        Enabled: false
+      Artifacts:
+        - Name: frontend
+          Files:
+            - "**/*"
+    Configuration:
+      Steps:
+        - Run: dnf install -y nodejs
+        - Run: cd frontend
+        - Run: npm i
+      Container:
+        Registry: CODECATALYST
+        Image: CodeCatalystLinux_x86_64:2024_03
+    DependsOn:
+      - ValidateModelAccess
+  CDKDeployAction:
+    Identifier: aws/cdk-deploy@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+      Artifacts:
+        - frontend
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+    DependsOn:
+      - bootstrap_us_east_1
+      - BuildFrontend
+    Compute:
+      Type: EC2
+    Configuration:
+      StackName: BedrockChatBotStack-l0b92zkp
+      Region: us-east-1
+      CdkRootPath: cdk
+      CfnOutputVariables: '["FrontendURL"]'
+      CdkCliVersion: latest

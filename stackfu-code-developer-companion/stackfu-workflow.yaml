@@ -1,0 +1,246 @@
+Name: stackfu-workflow
+SchemaVersion: "1.0"
+Triggers:
+  - Type: PUSH
+    Branches:
+      - main
+Actions:
+  ValidateModelAccess:
+    Identifier: aws/build@v1
+    Configuration:
+      Steps:
+        - Run: |
+            region=us-east-1
+            echo "Checking model access in $region region..."
+            
+            # Create proper JSON request body for Claude models
+            echo '{"anthropic_version":"bedrock-2023-05-31","max_tokens":10,"messages":[{"role":"user","content":"Hello"}]}' > claude_request.json
+            
+            # Create proper JSON request body for Cohere embed model
+            echo '{"texts":["Hello world"],"input_type":"search_document"}' > cohere_request.json
+            
+            # Check Claude 3 Sonnet access
+            echo "Checking access for anthropic.claude-3-sonnet-20240229-v1:0..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "anthropic.claude-3-sonnet-20240229-v1:0" --body file://claude_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model anthropic.claude-3-sonnet-20240229-v1:0"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model anthropic.claude-3-sonnet-20240229-v1:0"
+            fi
+            
+            # Check Claude 3 Haiku access
+            echo "Checking access for anthropic.claude-3-haiku-20240307-v1:0..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "anthropic.claude-3-haiku-20240307-v1:0" --body file://claude_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model anthropic.claude-3-haiku-20240307-v1:0"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model anthropic.claude-3-haiku-20240307-v1:0"
+            fi
+            
+            # Check Cohere Embed Multilingual access
+            echo "Checking access for cohere.embed-multilingual-v3..."
+            MODEL_ACCESS=$(aws bedrock-runtime invoke-model --region $region --model-id "cohere.embed-multilingual-v3" --body file://cohere_request.json --cli-binary-format raw-in-base64-out /dev/null 2>&1 || echo $?)
+            if [[ $MODEL_ACCESS == *"AccessDeniedException"* ]]; then 
+              echo "Access denied for model cohere.embed-multilingual-v3"
+              echo "Please enable model access in the Bedrock console: https://$region.console.aws.amazon.com/bedrock/home?region=$region#/modelaccess"
+              exit 1
+            else 
+              echo "Access validated for model cohere.embed-multilingual-v3"
+            fi
+            
+            echo "All model access checks passed successfully!"
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+  
+  bootstrap_us_east_1:
+    Identifier: aws/cdk-bootstrap@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+    DependsOn:
+      - ValidateModelAccess
+    Compute:
+      Type: EC2
+    Configuration:
+      Region: us-east-1
+      CdkCliVersion: latest
+  
+  IntegrateComponents:
+    Identifier: aws/build@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+    Configuration:
+      Steps:
+        - Run: |
+            echo "Integrating Orbie UI with Chatbot components..."
+            
+            # Create necessary directories if they don't exist
+            mkdir -p frontend/src/orbie-ui
+            mkdir -p backend/app/code-companion
+            
+            # Copy Orbie UI components to frontend
+            if [ -d "orbie/src" ]; then
+              cp -r orbie/src/* frontend/src/orbie-ui/
+              echo "Orbie UI components copied successfully"
+            else
+              echo "Warning: Orbie UI source directory not found"
+            fi
+            
+            # Copy Code Companion components to backend
+            if [ -d "orbie/lib/code-companion" ]; then
+              cp -r orbie/lib/code-companion/* backend/app/code-companion/
+              echo "Code Companion components copied successfully"
+            else
+              echo "Warning: Code Companion directory not found"
+            fi
+            
+            echo "Integration completed"
+      Container:
+        Registry: CODECATALYST
+        Image: CodeCatalystLinux_x86_64:2024_03
+    DependsOn:
+      - ValidateModelAccess
+  
+  BuildFrontend:
+    Identifier: aws/build@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+      Artifacts: []
+    Outputs:
+      AutoDiscoverReports:
+        Enabled: false
+      Artifacts:
+        - Name: frontend
+          Files:
+            - "**/*"
+    Configuration:
+      Steps:
+        - Run: dnf install -y nodejs
+        - Run: |
+            echo "Building integrated frontend..."
+            cd frontend
+            
+            # Install dependencies
+            npm i
+            
+            # If there are Orbie-specific dependencies, install them too
+            if [ -f "../orbie/package.json" ]; then
+              echo "Installing Orbie UI dependencies..."
+              ORBIE_DEPS=$(jq -r '.dependencies | keys | .[]' ../orbie/package.json)
+              for dep in $ORBIE_DEPS; do
+                if ! jq -e ".dependencies[\"$dep\"]" package.json > /dev/null 2>&1; then
+                  VERSION=$(jq -r ".dependencies[\"$dep\"]" ../orbie/package.json)
+                  echo "Adding $dep@$VERSION"
+                  npm install --save $dep@$VERSION
+                fi
+              done
+            fi
+            
+            # Build the frontend
+            npm run build
+      Container:
+        Registry: CODECATALYST
+        Image: CodeCatalystLinux_x86_64:2024_03
+    DependsOn:
+      - IntegrateComponents
+  
+  BuildBackend:
+    Identifier: aws/build@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+    Outputs:
+      Artifacts:
+        - Name: backend
+          Files:
+            - "**/*"
+    Configuration:
+      Steps:
+        - Run: |
+            echo "Building backend components..."
+            cd backend
+            
+            # Install Python dependencies
+            pip install -r requirements.txt
+            
+            # If there are Code Companion specific requirements, install them too
+            if [ -f "app/code-companion/requirements.txt" ]; then
+              pip install -r app/code-companion/requirements.txt
+            fi
+            
+            # Package backend code
+            echo "Backend prepared successfully"
+      Container:
+        Registry: CODECATALYST
+        Image: CodeCatalystLinux_x86_64:2024_03
+    DependsOn:
+      - IntegrateComponents
+  
+  CDKDeployAction:
+    Identifier: aws/cdk-deploy@v1
+    Inputs:
+      Sources:
+        - WorkflowSource
+      Artifacts:
+        - frontend
+        - backend
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+    DependsOn:
+      - bootstrap_us_east_1
+      - BuildFrontend
+      - BuildBackend
+    Compute:
+      Type: EC2
+    Configuration:
+      StackName: StackfuCodeDeveloperCompanion
+      Region: us-east-1
+      CdkRootPath: cdk
+      CfnOutputVariables: '["FrontendURL", "ApiEndpoint"]'
+      CdkCliVersion: latest
+      Parameters: |
+        {
+          "projectName": "stackfu-code-developer",
+          "environment": "prod",
+          "enableRagFeatures": "true"
+        }
+  
+  NotifyDeployment:
+    Identifier: aws/build@v1
+    Configuration:
+      Steps:
+        - Run: |
+            echo "Stackfu Code Developer Companion deployment completed!"
+            echo "Frontend URL: $FRONTEND_URL"
+            echo "API Endpoint: $API_ENDPOINT"
+            
+            # You can add notification logic here (e.g., sending to Slack, email, etc.)
+    Environment:
+      Name: DEFAULT_ENVIRONMENT_NAME
+      Connections:
+        - Name: "699475940746"
+          Role: AWSRoleForCodeCatalystSupport
+    DependsOn:
+      - CDKDeployAction
+    Variables:
+      - Name: FRONTEND_URL
+        Value: ${CDKDeployAction.CfnOutputs.FrontendURL}
+      - Name: API_ENDPOINT
+        Value: ${CDKDeployAction.CfnOutputs.ApiEndpoint}
